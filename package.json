@@ -1,15 +1,14 @@
 {
-  "name": "telegram-reverse-proxy",
+  "name": "rv_prox",
   "version": "1.0.0",
-  "description": "Free reverse proxy for Telegram Bot API",
-  "main": "server.js",
+  "description": "",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "engines": {
-    "node": ">=14.x"
-  },
-  "keywords": ["telegram", "proxy", "bot"],
+  "keywords": [],
   "author": "",
-  "license": "MIT"
+  "license": "ISC",
+  "type": "module",
+  "nodemon": "^3.1.11"
 }

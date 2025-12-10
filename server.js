@@ -1,95 +1,87 @@
-// server.js
-const http = require('http');
-const https = require('https');
-const url = require('url');
+import net from 'net';
 
-// Use PORT from environment or default to 8080
-const PORT = process.env.PORT || 8080;
-const TELEGRAM_API = 'api.telegram.org';
+const SERVER_PORT = 3000;
 
-// Create the reverse proxy server
-const server = http.createServer((req, res) => {
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    res.writeHead(200, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-    });
-    res.end();
-    return;
-  }
-
-  // Health check endpoint
-  if (req.url === '/' || req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'ok',
-      message: 'Telegram Reverse Proxy is running',
-      usage: 'Send requests to /bot<TOKEN>/METHOD',
-      example: '/bot123456:ABC-DEF/getMe'
-    }));
-    return;
-  }
-
-  // Log request
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
-
-  const parsedUrl = url.parse(req.url);
-  
-  // Prepare options for forwarding to Telegram
-  const options = {
-    hostname: TELEGRAM_API,
-    port: 443,
-    path: parsedUrl.path,
-    method: req.method,
-    headers: {
-      ...req.headers,
-      host: TELEGRAM_API
+const server = net.createServer((socket) => {
+  socket.once('data', (data) => {
+    // SOCKS5 Version Identifier/Method Selection
+    if (data[0] !== 0x05) {
+      console.error('Unsupported SOCKS version:', data[0]);
+      socket.end();
+      return;
     }
-  };
 
-  // Forward the request to Telegram API
-  const proxyReq = https.request(options, (proxyRes) => {
-    // Add CORS headers
-    const headers = {
-      ...proxyRes.headers,
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-    };
+    // We only support No Authentication (0x00)
+    // Server selection message: VER (1) | METHOD (1)
+    socket.write(Buffer.from([0x05, 0x00]));
 
-    res.writeHead(proxyRes.statusCode, headers);
-    proxyRes.pipe(res);
+    socket.once('data', (data) => {
+      // SOCKS5 Request Details
+      if (data[0] !== 0x05 || data[2] !== 0x00) {
+        console.error('Invalid SOCKS5 request');
+        socket.end();
+        return;
+      }
+
+      const command = data[1];
+      if (command !== 0x01) { // CONNECT
+        console.error('Unsupported command:', command);
+        socket.end();
+        return;
+      }
+
+      const addressType = data[3];
+      let targetAddress;
+      let targetPort;
+      let offset = 4;
+
+      if (addressType === 0x01) { // IPv4
+        targetAddress = data.slice(offset, offset + 4).join('.');
+        offset += 4;
+      } else if (addressType === 0x03) { // Domain name
+        const addrLen = data[offset];
+        offset += 1;
+        targetAddress = data.toString('utf8', offset, offset + addrLen);
+        offset += addrLen;
+      } else if (addressType === 0x04) { // IPv6
+        // IPv6 not fully implemented in this simple example, but structure is here
+        // targetAddress = ...
+        console.error('IPv6 not supported');
+        socket.end();
+        return;
+      } else {
+        console.error('Unsupported address type:', addressType);
+        socket.end();
+        return;
+      }
+
+      targetPort = data.readUInt16BE(offset);
+
+      console.log(`Connecting to ${targetAddress}:${targetPort}`);
+
+      const targetSocket = net.createConnection(targetPort, targetAddress, () => {
+        // SOCKS5 Reply: VER | REP | RSV | ATYP | BND.ADDR | BND.PORT
+        // REP: 0x00 succeeded
+        const response = Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+        socket.write(response);
+
+        socket.pipe(targetSocket);
+        targetSocket.pipe(socket);
+      });
+
+      targetSocket.on('error', (err) => {
+        console.error('Target connection error:', err.message);
+        socket.end();
+      });
+
+      socket.on('error', (err) => {
+        console.error('Client socket error:', err.message);
+        targetSocket.end();
+      });
+    });
   });
-
-  proxyReq.on('error', (e) => {
-    console.error(`Proxy error: ${e.message}`);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Proxy request failed', details: e.message }));
-  });
-
-  req.pipe(proxyReq);
 });
 
-server.on('error', (e) => {
-  console.error(`Server error: ${e.message}`);
+server.listen(SERVER_PORT, () => {
+  console.log(`SOCKS5 proxy server listening on port ${SERVER_PORT}`);
 });
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Telegram Proxy running on port ${PORT}`);
-  console.log(`📡 Forwarding requests to ${TELEGRAM_API}`);
-  console.log(`✅ Health check available at /health`);
-});
-
-// Graceful shutdown
-const shutdown = () => {
-  console.log('\n⏳ Shutting down...');
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
-};
-
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
